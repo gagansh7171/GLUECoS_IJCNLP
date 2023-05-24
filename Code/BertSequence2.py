@@ -218,7 +218,7 @@ def evaluate(args, model, tokenizer, labels, mode, prefix=""):
                 out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
 
     eval_loss = eval_loss / nb_eval_steps
-
+    logits_preds = preds
     preds = np.argmax(preds, axis=1)
     if mode == "test":
         preds_list = []
@@ -230,7 +230,7 @@ def evaluate(args, model, tokenizer, labels, mode, prefix=""):
             else:
                 preds_list.append(label_map[preds[i]])
 
-        return preds_list
+        return [preds_list,logits_preds ]
 
     else:
         result = acc_and_f1(preds, out_label_ids)
@@ -378,8 +378,14 @@ def main():
     # Saving predictions
     output_test_predictions_file = os.path.join(args.output_dir, "test_predictions.txt")
     with open(output_test_predictions_file, "w") as writer:
-        writer.write('\n'.join(preds))
+        writer.write('\n'.join(preds[0]))
 
+    logits = preds[1]
+    output_test_predictions_file = os.path.join(args.output_dir, args.model_type + "logits.txt")
+    with open(output_test_predictions_file, "w") as writer:
+        writer.write('\t'.join(labels))
+        writer.write('\n')
+        writer.write('\n'.join('\t'.join(map(str, row)) for row in logits))
     return results
 
 
