@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader, SequentialSampler, RandomSampler, Dataset
 from tqdm import tqdm, trange
 from transformers import (
-    BertForSequenceClassification, BertTokenizer, XLMForSequenceClassification, XLMTokenizer,
+    BertForSequenceClassification, DebertaForSequenceClassification, DebertaTokenizer, BertTokenizer, XLMForSequenceClassification, XLMTokenizer,
     XLMRobertaForSequenceClassification, XLMRobertaTokenizer, AdamW, get_linear_schedule_with_warmup
 )
 from sklearn.metrics import f1_score, precision_score, recall_score
@@ -162,7 +162,7 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, labels):
             global_step += 1
 
         # Checking for validation accuracy and stopping after drop in accuracy for 3 epochs
-        results = evaluate(args, model, tokenizer, labels, 'validation')
+        results = evaluate(args, model, tokenizer, labels, 'validation')[0]
         if results.get('f1') > best_f1_score and args.save_steps > 0:
             best_f1_score = results.get('f1')
             model_to_save = model.module if hasattr(model, "module") else model
@@ -218,7 +218,7 @@ def evaluate(args, model, tokenizer, labels, mode, prefix=""):
                 out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
 
     eval_loss = eval_loss / nb_eval_steps
-
+    logits_preds = preds
     preds = np.argmax(preds, axis=1)
     if mode == "test":
         preds_list = []
@@ -230,7 +230,7 @@ def evaluate(args, model, tokenizer, labels, mode, prefix=""):
             else:
                 preds_list.append(label_map[preds[i]])
 
-        return preds_list
+        return [preds_list, logits_preds]
 
     else:
         result = acc_and_f1(preds, out_label_ids)
@@ -240,7 +240,7 @@ def evaluate(args, model, tokenizer, labels, mode, prefix=""):
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
 
-        return results
+        return [results, logits_preds]
 
 
 class CustomDataset(Dataset):
@@ -276,7 +276,8 @@ def collate(examples):
 
 
 def load_and_cache_examples(args, tokenizer, labels, mode):
-
+    if mode == "test":
+      mode = "train"
     logger.info("Creating features from dataset file at %s", args.data_dir)
     examples = read_examples_from_file(args.data_dir, mode)
     features = convert_examples_to_features(examples, labels, tokenizer, args.max_seq_length)
@@ -344,13 +345,14 @@ def main():
     num_labels = len(labels)
 
     # Initialize model
-    tokenizer_class = {"xlm": XLMTokenizer, "bert": BertTokenizer, "xlm-roberta": XLMRobertaTokenizer}
+    tokenizer_class = {"xlm": XLMTokenizer, "bert": BertTokenizer, "xlm-roberta": XLMRobertaTokenizer, "deberta": DebertaTokenizer}
     if args.model_type not in tokenizer_class.keys():
         print("Model type has to be xlm/xlm-roberta/bert")
         exit(0)
+    print(args.model_type, args.model_name)
     tokenizer = tokenizer_class[args.model_type].from_pretrained(
         args.model_name, do_lower_case=True)
-    model_class = {"xlm": XLMForSequenceClassification, "bert": BertForSequenceClassification, "xlm-roberta": XLMRobertaForSequenceClassification}
+    model_class = {"xlm": XLMForSequenceClassification, "bert": BertForSequenceClassification, "xlm-roberta": XLMRobertaForSequenceClassification, "deberta": DebertaForSequenceClassification}
     model = model_class[args.model_type].from_pretrained(
         args.model_name, num_labels=num_labels)
 
@@ -373,12 +375,28 @@ def main():
     results = {}
 
     result = evaluate(args, model, tokenizer, labels, mode="validation")
-    preds = evaluate(args, model, tokenizer, labels, mode="test")
+    val_logits = result[1]
+    val_preds = result[0]
+    temp = evaluate(args, model, tokenizer, labels, mode="test")
+    logits = temp[1]
+    preds = temp[0]
 
     # Saving predictions
     output_test_predictions_file = os.path.join(args.output_dir, "test_predictions.txt")
     with open(output_test_predictions_file, "w") as writer:
         writer.write('\n'.join(preds))
+
+    output_test_predictions_file = os.path.join(args.output_dir, args.model_type + "logits.txt")
+    with open(output_test_predictions_file, "w") as writer:
+        writer.write('\t'.join(labels))
+        writer.write('\n')
+        writer.write('\n'.join('\t'.join(map(str, row)) for row in logits))
+
+    output_test_predictions_file = os.path.join(args.output_dir, args.model_type + "_val_logits.txt")
+    with open(output_test_predictions_file, "w") as writer:
+        writer.write('\t'.join(labels))
+        writer.write('\n')
+        writer.write('\n'.join('\t'.join(map(str, row)) for row in val_logits))
 
     return results
 
